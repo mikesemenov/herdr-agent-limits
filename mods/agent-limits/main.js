@@ -245,9 +245,9 @@ export default class AgentLimits extends View {
             .child(svg("mods/agent-limits/refresh.svg").size(14)))))
       .when(rows.length === 0, (el) => el.child(div().px(16).text_size(12).text_color(t.dim).child("No limit data yet.")))
       .when(this.menuOpen, (el) => el.child(
-        v_flex().id("lim-menu").absolute().inset_x(8).top(41).bottom(8)
+        v_flex().id("lim-menu").absolute().left(8).right(8).top(41).bottom(8)
           .rounded(8).border(1).border_color(t.border).bg(t.raised).py(2)
-          .child(...Object.entries(ICON).map(([agent, icon]) => {
+          .children([...Object.entries(ICON).map(([agent, icon]) => {
             const known = rows.find((r) => r.agent === agent);
             const name = known?.name ?? agent[0].toUpperCase() + agent.slice(1);
             const shown = !this.hidden.has(agent);
@@ -258,7 +258,7 @@ export default class AgentLimits extends View {
               .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(shown ? t.foreground : t.dim).child(name))
               .child(div().id(`lim-check-${agent}`).w(12).h(12).flex_none().rounded(3)
                 .bg(shown ? t.accent : t.input));
-          }))))
+          })])))
       .child(v_flex().px(8).children(visible.map(row)));
   }
 }
