@@ -207,7 +207,7 @@ export default class AgentLimits extends View {
         .when(!r.unlimited, (el) => el.child(h_flex().flex_none().gap(8)
           .child(cell(r.windows.find(isShort), r.on))
           .child(cell(r.windows.find((w) => !isShort(w)), r.on))))
-        .when(errByAgent[r.agent], (el) => el.child(
+        .when(Boolean(errByAgent[r.agent]), (el) => el.child(
           div().id(`lim-err-${r.agent}`).flex_none().text_size(11).font_semibold().text_color(t.blocked)
             .tooltip(errByAgent[r.agent])
             .child("Err")));
@@ -231,8 +231,7 @@ export default class AgentLimits extends View {
             .id("lim-filter")
             .text_size(11)
             .px(6).rounded(6)
-            .text_color(this.menuOpen || this.hidden.size > 0 ? t.accent : t.dim)
-            .when(this.menuOpen || this.hidden.size > 0, (el) => el.bg(t.selected))
+            .text_color(t.dim)
             .hover((s) => s.bg(t.hover))
             .on_click((_e, cx) => { this.menuOpen = !this.menuOpen; cx.notify(); })
             .tooltip("Choose which agents to show")
@@ -256,7 +255,8 @@ export default class AgentLimits extends View {
               .on_click((_e, cx) => this.toggleAgent(agent, cx))
               .child(image(icon).w(14).h(14).flex_none().when(!known, (i) => i.opacity(0.4)))
               .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(shown ? t.foreground : t.dim).child(name))
-              .child(div().w(14).text_size(12).text_right().text_color(shown ? t.accent : t.dim).child(shown ? "☑" : "☐"));
+              .child(div().id(`lim-check-${agent}`).w(12).h(12).flex_none().rounded(3)
+                .bg(shown ? t.accent : t.input));
           }))))
       .child(v_flex().px(8).children(visible.map(row)));
   }
