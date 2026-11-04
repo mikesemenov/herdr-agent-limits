@@ -65,16 +65,24 @@ export default class AgentLimits extends View {
     this.fetching = false;
     this.paused = false;
     this.pauseSaved = null;
+    this.hidden = new Set();
+    this.hiddenSaved = null;
+    this.menuOpen = false;
     this.seq = 0;
     this.applied = 0;
     // Local data shows at once and every 30 s (agents update it as they work); the servers
     // are asked at start, every 5 minutes, and from the refresh button. While paused, the
     // timers keep ticking but skip every fetch; the toggle survives restarts.
     this.pauseFile = `${appHome()}/data/agent-limits-paused.json`;
+    this.filterFile = `${appHome()}/data/agent-limits-hidden.json`;
     cx.spawn(async (cx) => {
       try {
         const text = await readTextFile(this.pauseFile);
         this.paused = text != null && JSON.parse(text)?.paused === true;
+      } catch { /* no saved state yet */ }
+      try {
+        const text = await readTextFile(this.filterFile);
+        if (text != null) this.hidden = new Set(JSON.parse(text)?.hidden ?? []);
       } catch { /* no saved state yet */ }
       this.refresh(cx);
       this.refresh(cx, true);
@@ -92,6 +100,16 @@ export default class AgentLimits extends View {
       cx.notify();
     });
     if (!this.paused) { this.refresh(cx); this.refresh(cx, true); }
+    cx.notify();
+  }
+
+  toggleAgent(agent, cx) {
+    if (this.hidden.has(agent)) this.hidden.delete(agent); else this.hidden.add(agent);
+    const text = JSON.stringify({ hidden: [...this.hidden] });
+    cx.spawn(async (cx) => {
+      try { await writeTextFile(this.filterFile, text, this.hiddenSaved); this.hiddenSaved = text; } catch { /* keep the in-memory state */ }
+      cx.notify();
+    });
     cx.notify();
   }
 
@@ -140,6 +158,7 @@ export default class AgentLimits extends View {
     }));
     const problem = [this.liveError, this.error].filter(Boolean).join("\n");
     const pic = (r) => image(ICON[r.agent]).w(14).h(14).flex_none().when(!r.on, (el) => el.opacity(0.5));
+    const visible = rows.filter((r) => !this.hidden.has(r.agent));
 
     if (narrow()) {
       return v_flex().size_full().bg(t.chrome).border_t(1).border_color(t.border).pt(10).gap(8).items_center().children(
@@ -198,6 +217,16 @@ export default class AgentLimits extends View {
             .tooltip(this.paused ? "Auto-refresh paused — click to resume" : "Pause auto-refresh")
             .child(this.paused ? "▶" : "⏸"))
           .child(div()
+            .id("lim-filter")
+            .text_size(11)
+            .px(6).rounded(6)
+            .text_color(this.menuOpen || this.hidden.size > 0 ? t.accent : t.dim)
+            .when(this.menuOpen || this.hidden.size > 0, (el) => el.bg(t.selected))
+            .hover((s) => s.bg(t.hover))
+            .on_click((_e, cx) => { this.menuOpen = !this.menuOpen; cx.notify(); })
+            .tooltip("Choose which agents to show")
+            .child("☰"))
+          .child(div()
             .id("lim-refresh")
             .text_color(t.dim)
             .hover((s) => s.text_color(t.foreground))
@@ -205,6 +234,19 @@ export default class AgentLimits extends View {
             .tooltip("Fetch usage from Claude, Codex, Kimi and Grok")
             .child(svg("mods/agent-limits/refresh.svg").size(14)))))
       .when(rows.length === 0, (el) => el.child(div().px(16).text_size(12).text_color(t.dim).child("No limit data yet.")))
-      .child(v_flex().px(8).children(rows.map(row)));
+      .when(this.menuOpen, (el) => el.child(
+        v_flex().id("lim-menu").mx(8).mb(6).flex_none().rounded(8).border(1).border_color(t.border).bg(t.raised).py(4)
+          .child(...Object.entries(ICON).map(([agent, icon]) => {
+            const known = rows.find((r) => r.agent === agent);
+            const name = known?.name ?? agent[0].toUpperCase() + agent.slice(1);
+            const shown = !this.hidden.has(agent);
+            return h_flex().id(`lim-menu-${agent}`).px(10).h(26).gap(8).items_center().cursor_pointer()
+              .hover((s) => s.bg(t.hover))
+              .on_click((_e, cx) => this.toggleAgent(agent, cx))
+              .child(image(icon).w(14).h(14).flex_none().when(!known, (i) => i.opacity(0.4)))
+              .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(shown ? t.foreground : t.dim).child(name))
+              .child(div().w(14).text_size(12).text_right().text_color(shown ? t.accent : t.dim).child(shown ? "✓" : ""));
+          }))))
+      .child(v_flex().px(8).children(visible.map(row)));
   }
 }
