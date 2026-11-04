@@ -58,7 +58,7 @@ fetch_claude() {
   fi
   [ -n "$creds" ] || creds=$(cat "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json" 2>/dev/null)
   token=$(printf '%s' "$creds" | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
-  [ -n "$token" ] || return 0
+  if [ -z "$token" ]; then rm -f "$CACHE_DIR/claude.err"; return 0; fi
   # After a 429 the usage API is left alone until the time it asked for.
   now=$(date +%s)
   until=$(cat "$CLAUDE_WAIT" 2>/dev/null)
@@ -99,7 +99,7 @@ fetch_claude() {
 
 fetch_codex() {
   command -v codex >/dev/null 2>&1 || return 0
-  [ "$(jq -r '.auth_mode // empty' "$CODEX_HOME/auth.json" 2>/dev/null)" = "chatgpt" ] || return 0
+  if [ "$(jq -r '.auth_mode // empty' "$CODEX_HOME/auth.json" 2>/dev/null)" != "chatgpt" ]; then rm -f "$CACHE_DIR/codex.err"; return 0; fi
   dir=$(mktemp -d)
   mkfifo "$dir/in"
   codex app-server <"$dir/in" >"$dir/out" 2>/dev/null &
@@ -142,7 +142,7 @@ fetch_codex() {
 fetch_kimi() {
   token=$(jq -rs 'map(select((.expires_at // 0) > now)) | max_by(.expires_at) | .access_token // empty' \
     "$HOME/.kimi-code"/credentials/*.json 2>/dev/null)
-  [ -n "$token" ] || return 0
+  if [ -z "$token" ]; then rm -f "$CACHE_DIR/kimi.err"; return 0; fi
   printf 'Authorization: Bearer %s\n' "$token" |
     curl -sS -m 10 -H @- "${KIMI_CODE_BASE_URL:-https://api.kimi.com/coding/v1}/usages" 2>/dev/null |
     jq -c --argjson now "$(date +%s)" '
@@ -159,7 +159,7 @@ fetch_kimi() {
 fetch_grok() {
   key=$(jq -r 'to_entries[] | select(.key | test("grok.com|auth.x.ai|accounts.x.ai")) | .value.key // empty' \
     "$HOME/.grok/auth.json" 2>/dev/null | head -1)
-  [ -n "$key" ] || return 0
+  if [ -z "$key" ]; then rm -f "$CACHE_DIR/grok.err"; return 0; fi
   # An empty gRPC-web data frame asks for the credits config. The answer has NUL
   # bytes, so it goes to a file: $(...) would strip them and desync the parser.
   tmp_grok=$(mktemp)
@@ -266,10 +266,11 @@ kimi_limits() {
     jq -c "$LABEL"'
       def epoch: if . == null then null
         else sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601? // null end;
-      def win($k; $m): (.usages[$k] // empty) |
-        {label: ($m | win_label), minutes: $m, pct: (.used_ratio * 100), resets_at: (.reset_time | epoch)};
+      def win($k; $m; $l): (.usages[$k] // empty) |
+        {label: ($l // ($m | win_label)), minutes: $m, pct: (.used_ratio * 100), resets_at: (.reset_time | epoch)};
       {agent: "kimi", name: "Kimi", updated_at, windows: [
-         win("limit_5h"; 300), win("limit_7d"; 10080), win("limit_month_total"; 43200)]}' 2>/dev/null
+         win("limit_5h"; 300; null), win("limit_7d"; 10080; null),
+         win("limit_month_total"; 43200; null), win("limit_month_code"; 43200; "code")]}' 2>/dev/null
 }
 
 # The newest Grok web-billing answer cached by fetch_grok.
@@ -290,6 +291,15 @@ if [ "$LIVE" = 1 ]; then
   wanted grok && run_fetch grok fetch_grok &
   wait
 fi
+
+# Errors live in the cache, not in a single run's stderr: a non-live read does not
+# fetch at all, and a fetch that is skipped (no sign-in) emits nothing. Report the
+# cached state on every run, so the "Err" mark on the row stays until it is fixed
+# (run_fetch rewrites/removes the file whenever a live fetch actually ran).
+for agent in claude codex kimi grok; do
+  wanted "$agent" || continue
+  if [ -f "$CACHE_DIR/$agent.err" ]; then cat "$CACHE_DIR/$agent.err"; echo; fi >&2
+done
 
 # Rows with no windows are kept: an agent whose sign-in broke keeps its row so the
 # error can sit on it, instead of only a shared indicator that names no one.
