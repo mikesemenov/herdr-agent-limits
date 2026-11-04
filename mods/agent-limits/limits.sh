@@ -33,6 +33,14 @@ done
 # wanted <agent>: true when the agent is selected (no selection = all selected).
 wanted() { case "$WANTED" in *" $1 "*) return 0 ;; *" "*) return 1 ;; *) return 0 ;; esac; }
 
+# Runs a fetcher, keeping its stderr as that agent's last error (cleared on success),
+# so a broken agent can still get a row with an "Err" mark even when it has no data.
+run_fetch() {
+  agent=$1; shift
+  err=$("$@" 2>&1 >/dev/null)
+  if [ -n "$err" ]; then printf '%s' "$err" >"$CACHE_DIR/$agent.err"; else rm -f "$CACHE_DIR/$agent.err"; fi
+}
+
 # Shared by every jq program below: a window's label from its length in minutes.
 LABEL='def win_label: if . < 1440 then "\(. / 60 | floor)h" else "\(. / 1440 | floor)d" end;'
 
@@ -276,11 +284,24 @@ grok_limits() {
 
 if [ "$LIVE" = 1 ]; then
   mkdir -p "$CACHE_DIR"
-  wanted claude && fetch_claude &
-  wanted codex && fetch_codex &
-  wanted kimi && fetch_kimi &
-  wanted grok && fetch_grok &
+  wanted claude && run_fetch claude fetch_claude &
+  wanted codex && run_fetch codex fetch_codex &
+  wanted kimi && run_fetch kimi fetch_kimi &
+  wanted grok && run_fetch grok fetch_grok &
   wait
 fi
 
-{ claude_limits; codex_limits; kimi_limits; grok_limits; } | jq -sc 'map(select((.windows | length > 0) or .unlimited == true))'
+# Rows with no windows are kept: an agent whose sign-in broke keeps its row so the
+# error can sit on it, instead of only a shared indicator that names no one.
+rows=$({ claude_limits; codex_limits; kimi_limits; grok_limits; } | jq -sc '.')
+
+# A wanted agent with a recorded error but no data still gets a row: its error is
+# shown on the row (main.js paints "Err" at its end), not as a nameless badge.
+for pair in claude:Claude codex:Codex kimi:Kimi grok:Grok; do
+  agent=${pair%%:*}; name=${pair#*:}
+  wanted "$agent" || continue
+  echo "$rows" | jq -e --arg a "$agent" 'map(.agent) | index($a) != null' >/dev/null && continue
+  [ -f "$CACHE_DIR/$agent.err" ] || continue
+  rows=$(echo "$rows" | jq -c --arg a "$agent" --arg n "$name" '. + [{agent: $a, name: $n, windows: []}]')
+done
+echo "$rows"
