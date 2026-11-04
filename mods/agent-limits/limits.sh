@@ -270,7 +270,7 @@ kimi_limits() {
         {label: ($l // ($m | win_label)), minutes: $m, pct: (.used_ratio * 100), resets_at: (.reset_time | epoch)};
       {agent: "kimi", name: "Kimi", updated_at, windows: [
          win("limit_5h"; 300; null), win("limit_7d"; 10080; null),
-         win("limit_month_total"; 43200; null), win("limit_month_code"; 43200; "code")]}' 2>/dev/null
+         win("limit_month_total"; 43200; null)]}' 2>/dev/null
 }
 
 # The newest Grok web-billing answer cached by fetch_grok.
