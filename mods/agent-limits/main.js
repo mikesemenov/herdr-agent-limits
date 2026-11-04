@@ -4,7 +4,7 @@
 
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { agents, exec, appHome, theme, layout } from "herdr";
+import { agents, exec, appHome, theme, layout, readTextFile, writeTextFile } from "herdr";
 
 const ICON = { claude: "icons/claude.svg", codex: "icons/codex.svg", kimi: "icons/kimi.svg", grok: "icons/grok.svg" };
 const KIND = { "claude-code": "claude", claude: "claude", codex: "codex", kimi: "kimi", "kimi-code": "kimi", grok: "grok" };
@@ -63,18 +63,41 @@ export default class AgentLimits extends View {
     this.error = null;
     this.liveError = null;
     this.fetching = false;
+    this.paused = false;
+    this.pauseSaved = null;
     this.seq = 0;
     this.applied = 0;
     // Local data shows at once and every 30 s (agents update it as they work); the servers
-    // are asked at start, every 5 minutes, and from the refresh button.
-    this.refresh(cx);
-    this.refresh(cx, true);
+    // are asked at start, every 5 minutes, and from the refresh button. While paused, the
+    // timers keep ticking but skip every fetch; the toggle survives restarts.
+    this.pauseFile = `${appHome()}/data/agent-limits-paused.json`;
+    cx.spawn(async (cx) => {
+      try {
+        const text = await readTextFile(this.pauseFile);
+        this.paused = text != null && JSON.parse(text)?.paused === true;
+      } catch { /* no saved state yet */ }
+      this.refresh(cx);
+      this.refresh(cx, true);
+      cx.notify();
+    });
     cx.timer.every(30000, (cx) => this.refresh(cx));
     cx.timer.every(5 * 60 * 1000, (cx) => this.refresh(cx, true));
   }
 
+  togglePause(cx) {
+    this.paused = !this.paused;
+    const text = JSON.stringify({ paused: this.paused });
+    cx.spawn(async (cx) => {
+      try { await writeTextFile(this.pauseFile, text, this.pauseSaved); this.pauseSaved = text; } catch { /* keep the in-memory state */ }
+      cx.notify();
+    });
+    if (!this.paused) { this.refresh(cx); this.refresh(cx, true); }
+    cx.notify();
+  }
+
   // live: ask Claude's and Codex's servers first (the refresh button); otherwise read local data.
-  refresh(cx, live = false) {
+  refresh(cx, live = false, force = false) {
+    if (this.paused && !force) return;
     if (live && this.fetching) return;
     if (live) this.fetching = true;
     const seq = ++this.seq;
@@ -165,10 +188,20 @@ export default class AgentLimits extends View {
         .child(h_flex().gap(8).items_center()
           .when(Boolean(problem), (el) => el.child(div().id("lim-error").text_size(11).font_semibold().text_color(t.blocked).tooltip(problem).child("!")))
           .child(div()
+            .id("lim-pause")
+            .text_size(11)
+            .px(6).rounded(6)
+            .text_color(this.paused ? t.accent : t.dim)
+            .when(this.paused, (el) => el.bg(t.selected))
+            .hover((s) => s.bg(t.hover))
+            .on_click((_e, cx) => this.togglePause(cx))
+            .tooltip(this.paused ? "Auto-refresh paused — click to resume" : "Pause auto-refresh")
+            .child(this.paused ? "▶" : "⏸"))
+          .child(div()
             .id("lim-refresh")
             .text_color(t.dim)
             .hover((s) => s.text_color(t.foreground))
-            .on_click((_e, cx) => this.refresh(cx, true))
+            .on_click((_e, cx) => this.refresh(cx, true, true))
             .tooltip("Fetch usage from Claude, Codex, Kimi and Grok")
             .child(svg("mods/agent-limits/refresh.svg").size(14)))))
       .when(rows.length === 0, (el) => el.child(div().px(16).text_size(12).text_color(t.dim).child("No limit data yet.")))
