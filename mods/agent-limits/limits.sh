@@ -35,10 +35,23 @@ wanted() { case "$WANTED" in *" $1 "*) return 0 ;; *" "*) return 1 ;; *) return 
 
 # Runs a fetcher, keeping its stderr as that agent's last error (cleared on success),
 # so a broken agent can still get a row with an "Err" mark even when it has no data.
+# The file's first line is the epoch the error happened at; errors older than ERR_TTL
+# seconds are dropped, so a transient network failure does not stick forever.
+ERR_TTL=1800
 run_fetch() {
   agent=$1; shift
   err=$("$@" 2>&1 >/dev/null)
-  if [ -n "$err" ]; then printf '%s' "$err" >"$CACHE_DIR/$agent.err"; else rm -f "$CACHE_DIR/$agent.err"; fi
+  if [ -n "$err" ]; then printf '%s\n%s' "$(date +%s)" "$err" >"$CACHE_DIR/$agent.err"; else rm -f "$CACHE_DIR/$agent.err"; fi
+}
+
+# Print a cached error (without its timestamp line) while it is fresh.
+print_err() {
+  f=$1
+  [ -f "$f" ] || return 0
+  stamp=$(head -n 1 "$f")
+  case "$stamp" in '' | *[!0-9]*) rm -f "$f"; return 0 ;; esac
+  [ $(( $(date +%s) - stamp )) -le "$ERR_TTL" ] || { rm -f "$f"; return 0; }
+  tail -n +2 "$f"
 }
 
 # Shared by every jq program below: a window's label from its length in minutes.
@@ -298,7 +311,8 @@ fi
 # (run_fetch rewrites/removes the file whenever a live fetch actually ran).
 for agent in claude codex kimi grok; do
   wanted "$agent" || continue
-  if [ -f "$CACHE_DIR/$agent.err" ]; then cat "$CACHE_DIR/$agent.err"; echo; fi >&2
+  msg=$(print_err "$CACHE_DIR/$agent.err")
+  [ -n "$msg" ] && printf '%s\n' "$msg" >&2
 done
 
 # Rows with no windows are kept: an agent whose sign-in broke keeps its row so the
