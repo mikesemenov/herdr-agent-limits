@@ -245,12 +245,13 @@ export default class AgentLimits extends View {
             .child(svg("mods/agent-limits/refresh.svg").size(14)))))
       .when(rows.length === 0, (el) => el.child(div().px(16).text_size(12).text_color(t.dim).child("No limit data yet.")))
       .when(this.menuOpen, (el) => el.child(
-        v_flex().id("lim-menu").mx(8).mb(6).flex_none().rounded(8).border(1).border_color(t.border).bg(t.raised).py(4)
+        v_flex().id("lim-menu").absolute().inset_x(8).top(41).bottom(8)
+          .rounded(8).border(1).border_color(t.border).bg(t.raised).py(2)
           .child(...Object.entries(ICON).map(([agent, icon]) => {
             const known = rows.find((r) => r.agent === agent);
             const name = known?.name ?? agent[0].toUpperCase() + agent.slice(1);
             const shown = !this.hidden.has(agent);
-            return h_flex().id(`lim-menu-${agent}`).px(10).h(26).gap(8).items_center().cursor_pointer()
+            return h_flex().id(`lim-menu-${agent}`).px(10).h(25).gap(8).items_center().cursor_pointer()
               .hover((s) => s.bg(t.hover))
               .on_click((_e, cx) => this.toggleAgent(agent, cx))
               .child(image(icon).w(14).h(14).flex_none().when(!known, (i) => i.opacity(0.4)))
