@@ -6,10 +6,21 @@ import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { agents, exec, appHome, theme, layout } from "herdr";
 
-const ICON = { claude: "icons/claude.svg", codex: "icons/codex.svg" };
-const KIND = { "claude-code": "claude", claude: "claude", codex: "codex" };
+const ICON = { claude: "icons/claude.svg", codex: "icons/codex.svg", kimi: "icons/kimi.svg", grok: "icons/grok.svg" };
+const KIND = { "claude-code": "claude", claude: "claude", codex: "codex", kimi: "kimi", "kimi-code": "kimi", grok: "grok" };
 const WARN = 70;
 const CRIT = 90;
+// Stepped gradient: one colour per 10% band, green -> yellow -> red.
+const band = (pct) => {
+  const p = Math.max(0, Math.min(100, Math.floor(pct / 10) * 10));
+  const h = Math.round(120 * (1 - p / 100));
+  const f = (n) => {
+    const k = (n + h / 30) % 12;
+    const v = 0.65 - 0.35 * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+    return Math.round(255 * v).toString(16).padStart(2, "0");
+  };
+  return `#${f(0)}${f(8)}${f(4)}`;
+};
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const CELL = 78;
 
@@ -97,7 +108,7 @@ export default class AgentLimits extends View {
     const t = theme();
     const now = Date.now() / 1000;
     const running = new Set(agents().map((a) => KIND[a.app] ?? KIND[a.program?.key]).filter(Boolean));
-    const color = (pct) => (pct >= CRIT ? t.blocked : pct >= WARN ? t.working : null);
+    const color = (pct) => band(pct);
     // A window whose reset time has passed starts again from zero.
     const rows = this.limits.map((r) => ({
       ...r,
@@ -158,7 +169,7 @@ export default class AgentLimits extends View {
             .text_color(t.dim)
             .hover((s) => s.text_color(t.foreground))
             .on_click((_e, cx) => this.refresh(cx, true))
-            .tooltip("Fetch usage from Claude and Codex")
+            .tooltip("Fetch usage from Claude, Codex, Kimi and Grok")
             .child(svg("mods/agent-limits/refresh.svg").size(14)))))
       .when(rows.length === 0, (el) => el.child(div().px(16).text_size(12).text_color(t.dim).child("No limit data yet.")))
       .child(v_flex().px(8).children(rows.map(row)));

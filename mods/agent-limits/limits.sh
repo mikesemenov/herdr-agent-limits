@@ -16,6 +16,8 @@ CLAUDE_SERVER_CACHE="$CACHE_DIR/claude-server.json"
 CLAUDE_WAIT="$CACHE_DIR/claude-wait-until"
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 CODEX_CACHE="$CACHE_DIR/codex.json"
+KIMI_CACHE="$CACHE_DIR/kimi.json"
+GROK_CACHE="$CACHE_DIR/grok.json"
 
 # Shared by every jq program below: a window's label from its length in minutes.
 LABEL='def win_label: if . < 1440 then "\(. / 60 | floor)h" else "\(. / 1440 | floor)d" end;'
@@ -112,6 +114,89 @@ fetch_codex() {
   rm -rf "$dir"
 }
 
+# Kimi Code keeps no quota on disk; the /usages endpoint answers with
+# {"usages": {"limit_5h": {"used_ratio": 0..1, "reset_time": ISO}, "limit_7d": …,
+#  "limit_month_total": …}}. The token comes from ~/.kimi-code/credentials/*.json.
+fetch_kimi() {
+  token=$(jq -rs 'map(select((.expires_at // 0) > now)) | max_by(.expires_at) | .access_token // empty' \
+    "$HOME/.kimi-code"/credentials/*.json 2>/dev/null)
+  [ -n "$token" ] || return 0
+  printf 'Authorization: Bearer %s\n' "$token" |
+    curl -sS -m 10 -H @- "${KIMI_CODE_BASE_URL:-https://api.kimi.com/coding/v1}/usages" 2>/dev/null |
+    jq -c --argjson now "$(date +%s)" '
+      def epoch: if . == null then null
+        else sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601? // null end;
+      {updated_at: $now, usages: (.usages // {} | with_entries(.value.resets_epoch = (.value.reset_time | epoch)))}' |
+    save "$KIMI_CACHE" || echo "Kimi: could not fetch usage (sign in again with kimi?)" >&2
+}
+
+# Grok Build: grok.com answers GetGrokCreditsConfig (gRPC-web, protobuf) with the
+# credits percentage and the reset epoch. Local CLIs offer no limit source
+# (x.ai/billing is not on `grok agent stdio` in current versions), so this is the
+# only read. The token is the grok.com / auth.x.ai key from ~/.grok/auth.json.
+fetch_grok() {
+  key=$(jq -r 'to_entries[] | select(.key | test("grok.com|auth.x.ai|accounts.x.ai")) | .value.key // empty' \
+    "$HOME/.grok/auth.json" 2>/dev/null | head -1)
+  [ -n "$key" ] || return 0
+  # An empty gRPC-web data frame asks for the credits config. The answer has NUL
+  # bytes, so it goes to a file: $(...) would strip them and desync the parser.
+  tmp_grok=$(mktemp)
+  printf '\0\0\0\0\0' |
+    curl -sS -m 15 -X POST "https://grok.com/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig" \
+      -H "Authorization: Bearer $key" -H "Origin: https://grok.com" -H "Referer: https://grok.com/?_s=usage" \
+      -H "Content-Type: application/grpc-web+proto" -H "x-grpc-web: 1" -H "x-user-agent: connect-es/2.1.1" \
+      --data-binary @- >"$tmp_grok" 2>/dev/null
+  [ -s "$tmp_grok" ] || { echo "Grok: no answer from grok.com" >&2; rm -f "$tmp_grok"; return; }
+  python3 -c '
+import json, struct, sys, time
+# Mirrors herdr-usage-bar grokwebbilling.go: walk the protobuf, take the first
+# 0..100 fixed32 on a field numbered 1 as the used %, and the future epoch
+# varint (path 1/5/1 preferred, else the smallest) as the reset.
+data = open(sys.argv[1], "rb").read()
+payloads, i = [], 0
+while i + 5 <= len(data):
+    flag, ln = data[i], int.from_bytes(data[i+1:i+5], "big")
+    if flag & 0x80: break
+    payloads.append(data[i+5:i+5+ln]); i += 5 + ln
+floats, varints = [], []
+def scan(buf, path):
+    p = 0
+    while p < len(buf):
+        tag = buf[p]; p += 1
+        field, wire = tag >> 3, tag & 7
+        if wire == 0:
+            v = 0; shift = 0
+            while p < len(buf):
+                b = buf[p]; p += 1; v |= (b & 0x7f) << shift; shift += 7
+                if not b & 0x80: break
+            varints.append((path + [field], v))
+        elif wire == 5:
+            if p + 4 > len(buf): return
+            floats.append((path + [field], struct.unpack("<f", buf[p:p+4])[0])); p += 4
+        elif wire == 2:
+            v = 0; shift = 0
+            while p < len(buf):
+                b = buf[p]; p += 1; v |= (b & 0x7f) << shift; shift += 7
+                if not b & 0x80: break
+            sub = buf[p:p+v]; p += v
+            scan(sub, path + [field])
+        elif wire == 1: p += 8
+        else: return
+for pl in payloads: scan(pl, [])
+now = time.time()
+pct = next((v for pth, v in sorted(floats, key=lambda f: len(f[0]))
+            if pth and pth[-1] == 1 and 0 <= v <= 100 and v == v), None)
+epochs = [(pth, v) for pth, v in varints if 1_700_000_000 <= v <= 2_100_000_000 and v > now]
+reset = next((v for pth, v in epochs if pth == [1, 5, 1]), min((v for _, v in epochs), default=None)) if epochs else None
+if pct is None: sys.exit(1)
+win = {"minutes": 10080 if reset and 0 < (reset - now) / 86400 <= 10 else 43200,
+       "pct": round(pct, 1), "resets_at": int(reset) if reset else None}
+print(json.dumps({"updated_at": int(now), "primary": win}))
+' "$tmp_grok" | save "$GROK_CACHE" || echo "Grok: could not parse the billing answer (sign in again with grok?)" >&2
+  rm -f "$tmp_grok"
+}
+
+
 # The statusline's numbers and the server's answer: whichever is newer. spend_limit comes
 # from the statusline behind a Claude gateway (daily, weekly or monthly budgets).
 claude_limits() {
@@ -149,11 +234,35 @@ codex_limits() {
     jq -sc 'max_by(.updated_at // 0) // empty'
 }
 
+# The newest Kimi /usage answer cached by fetch_kimi.
+kimi_limits() {
+  [ -f "$KIMI_CACHE" ] || return 0
+  cat "$KIMI_CACHE" |
+    jq -c "$LABEL"'
+      def epoch: if . == null then null
+        else sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601? // null end;
+      def win($k; $m): (.usages[$k] // empty) |
+        {label: ($m | win_label), minutes: $m, pct: (.used_ratio * 100), resets_at: (.reset_time | epoch)};
+      {agent: "kimi", name: "Kimi", updated_at, windows: [
+         win("limit_5h"; 300), win("limit_7d"; 10080), win("limit_month_total"; 43200)]}' 2>/dev/null
+}
+
+# The newest Grok web-billing answer cached by fetch_grok.
+grok_limits() {
+  [ -f "$GROK_CACHE" ] || return 0
+  cat "$GROK_CACHE" |
+    jq -c "$LABEL"'
+      def win: {label: (.minutes | win_label), minutes, pct, resets_at};
+      {agent: "grok", name: "Grok", updated_at, windows: ([.primary, .secondary | select(. != null) | win])}' 2>/dev/null
+}
+
 if [ "$1" = "--live" ]; then
   mkdir -p "$CACHE_DIR"
   fetch_claude &
   fetch_codex &
+  fetch_kimi &
+  fetch_grok &
   wait
 fi
 
-{ claude_limits; codex_limits; } | jq -sc 'map(select((.windows | length > 0) or .unlimited == true))'
+{ claude_limits; codex_limits; kimi_limits; grok_limits; } | jq -sc 'map(select((.windows | length > 0) or .unlimited == true))'
