@@ -122,7 +122,8 @@ export default class AgentLimits extends View {
     cx.spawn(async (cx) => {
       let error = null;
       try {
-        const args = [`${appHome()}/mods/agent-limits/limits.sh`, ...(live ? ["--live"] : [])];
+        const shown = Object.keys(ICON).filter((a) => !this.hidden.has(a));
+        const args = [`${appHome()}/mods/agent-limits/limits.sh`, ...(live ? ["--live"] : []), ...shown];
         const r = await exec("sh", args);
         if (r.code !== 0) throw new Error(r.stderr.trim() || `limits.sh exited ${r.code}`);
         // A server answer is the newest data there is; a local read that started before

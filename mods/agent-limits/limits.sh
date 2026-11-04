@@ -5,9 +5,11 @@
 # ("unlimited": the server answered with no limits). Only windows that exist are listed.
 # Local sources: Claude's rate_limits cached by statusline.sh beside this file (optional, set as
 # Claude Code's statusLine), and the newest token_count rate_limits in ~/.codex/sessions.
-# --live first asks the servers (Claude's OAuth usage API, Codex's app-server) and caches
-# the answers; failures go to stderr and the local data is printed anyway. Accounts without a
-# subscription sign-in (API keys) are skipped quietly.
+# --live first asks the servers (Claude's OAuth usage API, Codex's app-server, Kimi's /usages,
+# Grok's billing) and caches the answers; failures go to stderr and the local data is printed
+# anyway. Accounts without a subscription sign-in (API keys) are skipped quietly.
+# Any argument that is not --live names an agent to include (claude, codex, kimi, grok);
+# with no such arguments every agent is included. Hidden agents are neither fetched nor shown.
 
 PATH="$PATH:/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin"
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/agent-limits"
@@ -18,6 +20,18 @@ CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 CODEX_CACHE="$CACHE_DIR/codex.json"
 KIMI_CACHE="$CACHE_DIR/kimi.json"
 GROK_CACHE="$CACHE_DIR/grok.json"
+
+# Which agents to fetch and print: every argument that is not --live; empty means all.
+LIVE=0
+WANTED=""
+for arg in "$@"; do
+  case "$arg" in
+    --live) LIVE=1 ;;
+    *) WANTED="$WANTED $arg " ;;
+  esac
+done
+# wanted <agent>: true when the agent is selected (no selection = all selected).
+wanted() { case "$WANTED" in *" $1 "*) return 0 ;; *" "*) return 1 ;; *) return 0 ;; esac; }
 
 # Shared by every jq program below: a window's label from its length in minutes.
 LABEL='def win_label: if . < 1440 then "\(. / 60 | floor)h" else "\(. / 1440 | floor)d" end;'
@@ -200,6 +214,7 @@ print(json.dumps({"updated_at": int(now), "primary": win}))
 # The statusline's numbers and the server's answer: whichever is newer. spend_limit comes
 # from the statusline behind a Claude gateway (daily, weekly or monthly budgets).
 claude_limits() {
+  wanted claude || return 0
   for f in "$CLAUDE_CACHE" "$CLAUDE_SERVER_CACHE"; do [ -f "$f" ] && cat "$f"; done |
     jq -sc "$LABEL"'
       def win($m): {label: ($m | win_label), minutes: $m, pct: .used_percentage, resets_at};
@@ -230,12 +245,14 @@ codex_from_logs() {
 
 # The server's answer and the session logs: whichever is newer.
 codex_limits() {
+  wanted codex || return 0
   { codex_from_logs; [ -f "$CODEX_CACHE" ] && cat "$CODEX_CACHE"; } |
     jq -sc 'max_by(.updated_at // 0) // empty'
 }
 
 # The newest Kimi /usage answer cached by fetch_kimi.
 kimi_limits() {
+  wanted kimi || return 0
   [ -f "$KIMI_CACHE" ] || return 0
   cat "$KIMI_CACHE" |
     jq -c "$LABEL"'
@@ -249,6 +266,7 @@ kimi_limits() {
 
 # The newest Grok web-billing answer cached by fetch_grok.
 grok_limits() {
+  wanted grok || return 0
   [ -f "$GROK_CACHE" ] || return 0
   cat "$GROK_CACHE" |
     jq -c "$LABEL"'
@@ -256,12 +274,12 @@ grok_limits() {
       {agent: "grok", name: "Grok", updated_at, windows: ([.primary, .secondary | select(. != null) | win])}' 2>/dev/null
 }
 
-if [ "$1" = "--live" ]; then
+if [ "$LIVE" = 1 ]; then
   mkdir -p "$CACHE_DIR"
-  fetch_claude &
-  fetch_codex &
-  fetch_kimi &
-  fetch_grok &
+  wanted claude && fetch_claude &
+  wanted codex && fetch_codex &
+  wanted kimi && fetch_kimi &
+  wanted grok && fetch_grok &
   wait
 fi
 
