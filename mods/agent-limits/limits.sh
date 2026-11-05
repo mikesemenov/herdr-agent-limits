@@ -176,12 +176,20 @@ fetch_grok() {
   # An empty gRPC-web data frame asks for the credits config. The answer has NUL
   # bytes, so it goes to a file: $(...) would strip them and desync the parser.
   tmp_grok=$(mktemp)
-  printf '\0\0\0\0\0' |
+  http=$(printf '\0\0\0\0\0' |
     curl -sS -m 15 -X POST "https://grok.com/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig" \
       -H "Authorization: Bearer $key" -H "Origin: https://grok.com" -H "Referer: https://grok.com/?_s=usage" \
       -H "Content-Type: application/grpc-web+proto" -H "x-grpc-web: 1" -H "x-user-agent: connect-es/2.1.1" \
-      --data-binary @- >"$tmp_grok" 2>/dev/null
-  [ -s "$tmp_grok" ] || { echo "Grok: no answer from grok.com" >&2; rm -f "$tmp_grok"; return; }
+      --data-binary @- -o "$tmp_grok" -w '%{http_code}' 2>/dev/null)
+  # An expired sign-in gets an empty 200 or a 401/403 instead of a billing answer.
+  if [ -s "$tmp_grok" ] && [ "$http" = 200 ]; then :; else
+    case "$http" in
+      401 | 403 | 200) echo "Grok: sign-in expired; open grok to renew it" >&2 ;;
+      *) echo "Grok: no answer from grok.com (HTTP $http)" >&2 ;;
+    esac
+    rm -f "$tmp_grok"
+    return
+  fi
   python3 -c '
 import json, struct, sys, time
 # Mirrors herdr-usage-bar grokwebbilling.go: walk the protobuf, take the first
